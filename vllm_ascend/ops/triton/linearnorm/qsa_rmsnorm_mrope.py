@@ -22,8 +22,8 @@ def _validate_rope_positions(
         raise ValueError("QSA positions, rotary cache and input must share a device")
 
 
-@triton.jit
-def _qsa_rmsnorm_mrope(
+@triton.jit(do_not_specialize=["position_stride_axis", "position_stride_token", "cache_rows"])
+def _qsa_rmsnorm_mrope_kernel(
     input_ptr,
     weight_ptr,
     cos_sin_ptr,
@@ -113,108 +113,6 @@ def _qsa_rmsnorm_mrope(
     tl.store(output_row + rotary_offsets + half_rope_dim, rotated_second)
 
 
-@triton.jit
-def _qsa_rmsnorm_mrope_kernel(
-    input_ptr,
-    weight_ptr,
-    cos_sin_ptr,
-    output_ptr,
-    input_stride_token,
-    input_stride_head,
-    cos_sin_stride_axis,
-    cos_sin_stride_token,
-    output_stride_token,
-    output_stride_head,
-    num_heads: tl.constexpr,
-    head_dim: tl.constexpr,
-    eps: tl.constexpr,
-    mrope_section_h: tl.constexpr,
-    mrope_section_w: tl.constexpr,
-    rope_dim: tl.constexpr,
-    has_mrope: tl.constexpr,
-    block_dim: tl.constexpr,
-):
-    # Keep the legacy launch signature free of direct-cache metadata.
-    _qsa_rmsnorm_mrope(
-        input_ptr,
-        weight_ptr,
-        cos_sin_ptr,
-        output_ptr,
-        input_stride_token,
-        input_stride_head,
-        cos_sin_stride_axis,
-        cos_sin_stride_token,
-        output_stride_token,
-        output_stride_head,
-        num_heads,
-        head_dim,
-        eps,
-        mrope_section_h,
-        mrope_section_w,
-        rope_dim,
-        has_mrope,
-        block_dim,
-        None,
-        0,
-        0,
-        0,
-        False,
-    )
-
-
-@triton.jit(do_not_specialize=["position_stride_axis", "position_stride_token", "cache_rows"])
-def _qsa_rmsnorm_mrope_with_positions_kernel(
-    input_ptr,
-    weight_ptr,
-    cos_sin_ptr,
-    output_ptr,
-    input_stride_token,
-    input_stride_head,
-    cos_sin_stride_axis,
-    cos_sin_stride_token,
-    output_stride_token,
-    output_stride_head,
-    num_heads: tl.constexpr,
-    head_dim: tl.constexpr,
-    eps: tl.constexpr,
-    mrope_section_h: tl.constexpr,
-    mrope_section_w: tl.constexpr,
-    rope_dim: tl.constexpr,
-    has_mrope: tl.constexpr,
-    block_dim: tl.constexpr,
-    positions_ptr,
-    position_stride_axis,
-    position_stride_token,
-    cache_rows,
-):
-    # Gather full-cache rows using runtime position metadata.
-    _qsa_rmsnorm_mrope(
-        input_ptr,
-        weight_ptr,
-        cos_sin_ptr,
-        output_ptr,
-        input_stride_token,
-        input_stride_head,
-        cos_sin_stride_axis,
-        cos_sin_stride_token,
-        output_stride_token,
-        output_stride_head,
-        num_heads,
-        head_dim,
-        eps,
-        mrope_section_h,
-        mrope_section_w,
-        rope_dim,
-        has_mrope,
-        block_dim,
-        positions_ptr,
-        position_stride_axis,
-        position_stride_token,
-        cache_rows,
-        True,
-    )
-
-
 def triton_qsa_rmsnorm_mrope(
     tensor: torch.Tensor,
     weight: torch.Tensor,
@@ -252,18 +150,8 @@ def triton_qsa_rmsnorm_mrope(
     num_tokens, num_heads, head_dim = tensor.shape
     if not num_tokens:
         return output
-    # Separate entry points keep unused runtime arguments out of legacy binaries.
-    kernel = _qsa_rmsnorm_mrope_kernel
-    position_kwargs = {}
-    if positions is not None:
-        kernel = _qsa_rmsnorm_mrope_with_positions_kernel
-        position_kwargs = {
-            "positions_ptr": positions,
-            "position_stride_axis": positions.stride(0) if positions.ndim == 2 else 0,
-            "position_stride_token": positions.stride(-1),
-            "cache_rows": cos_sin.shape[0],
-        }
-    kernel[(num_tokens, num_heads)](
+    gather_cache = positions is not None
+    _qsa_rmsnorm_mrope_kernel[(num_tokens, num_heads)](
         tensor,
         weight,
         cos_sin,
@@ -282,7 +170,11 @@ def triton_qsa_rmsnorm_mrope(
         rope_dim=rope_dim,
         has_mrope=has_mrope,
         block_dim=triton.next_power_of_2(head_dim),
-        **position_kwargs,
+        positions_ptr=positions,
+        position_stride_axis=positions.stride(0) if gather_cache and has_mrope else 0,
+        position_stride_token=positions.stride(-1) if gather_cache else 0,
+        cache_rows=cos_sin.shape[0] if gather_cache else 0,
+        GATHER_CACHE=gather_cache,
         num_warps=1,
         num_stages=1,
     )

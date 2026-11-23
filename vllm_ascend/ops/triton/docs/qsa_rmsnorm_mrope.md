@@ -63,16 +63,17 @@ This mode also serves the decomposed compressed-key reference. It returns a new
 tensor, without mutating positions, weights or the rotary table. Graph replay
 reads current position contents, not captured Python values.
 
-The wrapper selects separate Triton entry points for gathered-cache and
-full-cache inputs. Both inline the same normalization and rotary body.
-The legacy entry does not accept position pointers or direct-cache metadata,
-so those unused arguments cannot affect its launch signature or specialization.
+The wrapper uses one Triton entry point for gathered-cache and full-cache
+inputs, selected by the compile-time `GATHER_CACHE` flag. The unused lookup
+branch is eliminated during compilation. The current QSA production caller
+supplies positions; gathered-cache mode remains available for reference tests
+and interface compatibility.
 
-In the full-cache entry, position strides and cache row count are runtime
-parameters listed in `do_not_specialize`. This includes the changing axis
-stride of contiguous `[3, T]` positions. Each entry fixes its lookup mode at
-compile time; vector dimensions and other existing specialization policies
-are unchanged. Compilation counts and latency need target-runtime validation.
+Position strides and cache row count are runtime parameters listed in
+`do_not_specialize`, including the changing axis stride of contiguous `[3, T]`
+positions. Gathered-cache calls pass fixed `None`/zero position metadata.
+Vector dimensions and other existing specialization policies are unchanged.
+Compilation counts and latency need target-runtime validation.
 
 ## Origin and Differences
 

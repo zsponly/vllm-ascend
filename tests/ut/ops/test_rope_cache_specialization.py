@@ -35,8 +35,7 @@ def wrapper(request):
         "torch": torch,
         "triton": SimpleNamespace(next_power_of_2=lambda n: 1 << (n - 1).bit_length()),
         "get_vectorcore_num": lambda: 48,
-        "_qsa_rmsnorm_mrope_kernel": RecordedKernel("legacy"),
-        "_qsa_rmsnorm_mrope_with_positions_kernel": RecordedKernel("positions"),
+        "_qsa_rmsnorm_mrope_kernel": RecordedKernel("qsa"),
         "split_qkv_rmsnorm_mrope_kernel": RecordedKernel("legacy"),
         "_split_qkv_rmsnorm_mrope_with_positions_kernel": RecordedKernel("positions"),
     }
@@ -74,13 +73,20 @@ def wrapper(request):
     return name, invoke
 
 
-def test_legacy_launch_has_no_direct_cache_metadata(wrapper):
+def test_legacy_launch_isolates_unused_direct_cache_metadata(wrapper):
     name, invoke = wrapper
     cache_axes = (1, 3) if name == "qsa_rmsnorm_mrope" else (3,)
     for axes in cache_axes:
         for rows in (1, 32, 1, 129, 32):
             shape = (rows, 64) if axes == 1 else (3, rows, 64)
             launch = invoke(rows, torch.empty(shape, dtype=torch.bfloat16))
+            if name == "qsa_rmsnorm_mrope":
+                assert launch["kernel"] == "qsa"
+                assert launch["GATHER_CACHE"] is False
+                assert launch["positions_ptr"] is None
+                for parameter in ("position_stride_axis", "position_stride_token", "cache_rows"):
+                    assert launch[parameter] == 0
+                continue
             assert launch["kernel"] == "legacy"
             assert (
                 not {
@@ -98,14 +104,16 @@ def test_legacy_launch_has_no_direct_cache_metadata(wrapper):
 @pytest.mark.parametrize("rows", [1, 32, 129])
 @pytest.mark.parametrize("axes", [1, 3])
 def test_direct_cache_keeps_actual_table_and_position_strides(wrapper, rows, axes):
-    _, invoke = wrapper
+    name, invoke = wrapper
     cache = torch.empty(257, 80, dtype=torch.bfloat16)[:, :64]
     positions = torch.empty(3, rows * 2, dtype=torch.int64)[:, ::2]
     if axes == 1:
         positions = positions[0]
     launch = invoke(rows, cache, positions)
     assert launch["positions_ptr"] is positions
-    assert launch["kernel"] == "positions"
+    assert launch["kernel"] == ("qsa" if name == "qsa_rmsnorm_mrope" else "positions")
+    if name == "qsa_rmsnorm_mrope":
+        assert launch["GATHER_CACHE"] is True
     assert launch["cache_rows"] == 257
     if "cache_stride" in launch:
         assert launch["cache_stride"] == 80
@@ -117,7 +125,7 @@ def test_direct_cache_keeps_actual_table_and_position_strides(wrapper, rows, axe
 def test_dynamic_cache_metadata_uses_runtime_parameters_without_specialization(name):
     path = Path(__file__).resolve().parents[3] / f"vllm_ascend/ops/triton/linearnorm/{name}.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    kernel_name = f"_{name}_with_positions_kernel"
+    kernel_name = "_qsa_rmsnorm_mrope_kernel" if name == "qsa_rmsnorm_mrope" else f"_{name}_with_positions_kernel"
     kernel = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == kernel_name)
     arguments = {arg.arg: arg for arg in kernel.args.args}
     metadata = {"position_stride_axis", "position_stride_token", "cache_rows"}
@@ -129,8 +137,15 @@ def test_dynamic_cache_metadata_uses_runtime_parameters_without_specialization(n
     assert metadata <= set(ast.literal_eval(controls))
     for parameter in metadata:
         assert arguments[parameter].annotation is None
-    # Each entry fixes the mode; vector widths remain compile-time parameters.
-    assert "GATHER_CACHE" not in arguments
+    # QSA uses a compile-time mode; split keeps separate production entries.
+    if name == "qsa_rmsnorm_mrope":
+        assert ast.unparse(arguments["GATHER_CACHE"].annotation) == "tl.constexpr"
+        assert not any(
+            isinstance(node, ast.FunctionDef) and node.name == "_qsa_rmsnorm_mrope_with_positions_kernel"
+            for node in tree.body
+        )
+    else:
+        assert "GATHER_CACHE" not in arguments
     assert ast.unparse(arguments["rope_dim"].annotation) == "tl.constexpr"
 
 
@@ -146,8 +161,8 @@ def test_direct_position_axis_stride_tracks_layout_at_runtime(wrapper, layout):
         assert launch["position_stride_token"] == 1
 
 
-@pytest.mark.parametrize("name", ["qsa_rmsnorm_mrope", "split_qkv_rmsnorm_mrope"])
-def test_legacy_entry_keeps_original_signature_and_shared_body(name):
+def test_split_legacy_entry_keeps_original_signature_and_shared_body():
+    name = "split_qkv_rmsnorm_mrope"
     path = Path(__file__).resolve().parents[3] / f"vllm_ascend/ops/triton/linearnorm/{name}.py"
     functions = {
         node.name: node
