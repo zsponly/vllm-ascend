@@ -71,7 +71,8 @@ and interface compatibility.
 
 Position strides and cache row count are runtime parameters listed in
 `do_not_specialize`, including the changing axis stride of contiguous `[3, T]`
-positions. Gathered-cache calls pass fixed `None`/zero position metadata.
+positions. Gathered-cache calls pass a `None` position pointer and zero position
+strides; the cache row count is unused in this mode.
 Vector dimensions and other existing specialization policies are unchanged.
 Compilation counts and latency need target-runtime validation.
 

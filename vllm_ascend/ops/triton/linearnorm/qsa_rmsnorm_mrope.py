@@ -34,14 +34,14 @@ def _qsa_rmsnorm_mrope_kernel(
     cos_sin_stride_token,
     output_stride_token,
     output_stride_head,
-    num_heads: tl.constexpr,
-    head_dim: tl.constexpr,
-    eps: tl.constexpr,
-    mrope_section_h: tl.constexpr,
-    mrope_section_w: tl.constexpr,
-    rope_dim: tl.constexpr,
-    has_mrope: tl.constexpr,
-    block_dim: tl.constexpr,
+    NUM_HEADS: tl.constexpr,
+    HEAD_DIM: tl.constexpr,
+    EPS: tl.constexpr,
+    MROPE_SECTION_H: tl.constexpr,
+    MROPE_SECTION_W: tl.constexpr,
+    ROPE_DIM: tl.constexpr,
+    HAS_MROPE: tl.constexpr,
+    BLOCK_DIM: tl.constexpr,
     positions_ptr,
     position_stride_axis,
     position_stride_token,
@@ -50,23 +50,23 @@ def _qsa_rmsnorm_mrope_kernel(
 ):
     token_id = tl.program_id(0)
     head_id = tl.program_id(1)
-    offsets = tl.arange(0, block_dim)
-    mask = offsets < head_dim
+    offsets = tl.arange(0, BLOCK_DIM)
+    mask = offsets < HEAD_DIM
     input_row = input_ptr + token_id * input_stride_token + head_id * input_stride_head
     values = tl.load(input_row + offsets, mask=mask, other=0.0).to(tl.float32)
     weight = tl.load(weight_ptr + offsets, mask=mask, other=0.0).to(tl.float32) + 1.0
-    variance = tl.sum(values * values, axis=0) / head_dim
-    reciprocal_std = tl.rsqrt(variance + eps)
+    variance = tl.sum(values * values, axis=0) / HEAD_DIM
+    reciprocal_std = tl.rsqrt(variance + EPS)
     normalized = (values * reciprocal_std * weight).to(tl.bfloat16)
 
-    half_rope_dim: tl.constexpr = rope_dim // 2
-    rotary_offsets = tl.arange(0, half_rope_dim)
+    HALF_ROPE_DIM: tl.constexpr = ROPE_DIM // 2
+    rotary_offsets = tl.arange(0, HALF_ROPE_DIM)
     if GATHER_CACHE:
-        if has_mrope:
+        if HAS_MROPE:
             # Pair indices cycle through t/h/w (0/1/2); each section count
             # becomes an interleaved index cutoff after multiplying by 3.
-            h_mask = (rotary_offsets % 3 == 1) & (rotary_offsets < mrope_section_h * 3)
-            w_mask = (rotary_offsets % 3 == 2) & (rotary_offsets < mrope_section_w * 3)
+            h_mask = (rotary_offsets % 3 == 1) & (rotary_offsets < MROPE_SECTION_H * 3)
+            w_mask = (rotary_offsets % 3 == 2) & (rotary_offsets < MROPE_SECTION_W * 3)
             axis = tl.where(h_mask, 1, tl.where(w_mask, 2, 0))
             position = tl.load(positions_ptr + axis * position_stride_axis + token_id * position_stride_token)
         else:
@@ -76,27 +76,27 @@ def _qsa_rmsnorm_mrope_kernel(
         position = tl.minimum(tl.maximum(position, 0), cache_rows - 1)
         cache_row = cos_sin_ptr + position.to(tl.int64) * cos_sin_stride_token
         cos = tl.load(cache_row + rotary_offsets).to(tl.float32)
-        sin = tl.load(cache_row + rotary_offsets + half_rope_dim).to(tl.float32)
-    elif has_mrope:
-        h_mask = (rotary_offsets % 3 == 1) & (rotary_offsets < mrope_section_h * 3)
-        w_mask = (rotary_offsets % 3 == 2) & (rotary_offsets < mrope_section_w * 3)
+        sin = tl.load(cache_row + rotary_offsets + HALF_ROPE_DIM).to(tl.float32)
+    elif HAS_MROPE:
+        h_mask = (rotary_offsets % 3 == 1) & (rotary_offsets < MROPE_SECTION_H * 3)
+        w_mask = (rotary_offsets % 3 == 2) & (rotary_offsets < MROPE_SECTION_W * 3)
         cache_row = cos_sin_ptr + token_id * cos_sin_stride_token
         cos_t = tl.load(cache_row + rotary_offsets).to(tl.float32)
         cos_h = tl.load(cache_row + cos_sin_stride_axis + rotary_offsets).to(tl.float32)
         cos_w = tl.load(cache_row + 2 * cos_sin_stride_axis + rotary_offsets).to(tl.float32)
-        sin_t = tl.load(cache_row + rotary_offsets + half_rope_dim).to(tl.float32)
-        sin_h = tl.load(cache_row + cos_sin_stride_axis + rotary_offsets + half_rope_dim).to(tl.float32)
-        sin_w = tl.load(cache_row + 2 * cos_sin_stride_axis + rotary_offsets + half_rope_dim).to(tl.float32)
+        sin_t = tl.load(cache_row + rotary_offsets + HALF_ROPE_DIM).to(tl.float32)
+        sin_h = tl.load(cache_row + cos_sin_stride_axis + rotary_offsets + HALF_ROPE_DIM).to(tl.float32)
+        sin_w = tl.load(cache_row + 2 * cos_sin_stride_axis + rotary_offsets + HALF_ROPE_DIM).to(tl.float32)
         cos = tl.where(h_mask, cos_h, tl.where(w_mask, cos_w, cos_t))
         sin = tl.where(h_mask, sin_h, tl.where(w_mask, sin_w, sin_t))
     else:
         cache_row = cos_sin_ptr + token_id * cos_sin_stride_token
         cos = tl.load(cache_row + rotary_offsets).to(tl.float32)
-        sin = tl.load(cache_row + rotary_offsets + half_rope_dim).to(tl.float32)
+        sin = tl.load(cache_row + rotary_offsets + HALF_ROPE_DIM).to(tl.float32)
     first = tl.load(input_row + rotary_offsets).to(tl.float32)
     first_weight = tl.load(weight_ptr + rotary_offsets).to(tl.float32) + 1.0
     first = (first * reciprocal_std * first_weight).to(tl.bfloat16)
-    second_offsets = rotary_offsets + half_rope_dim
+    second_offsets = rotary_offsets + HALF_ROPE_DIM
     second = tl.load(input_row + second_offsets).to(tl.float32)
     second_weight = tl.load(weight_ptr + second_offsets).to(tl.float32) + 1.0
     second = (second * reciprocal_std * second_weight).to(tl.bfloat16)
@@ -110,7 +110,7 @@ def _qsa_rmsnorm_mrope_kernel(
     output_row = output_ptr + token_id * output_stride_token + head_id * output_stride_head
     tl.store(output_row + offsets, normalized, mask=mask)
     tl.store(output_row + rotary_offsets, rotated_first)
-    tl.store(output_row + rotary_offsets + half_rope_dim, rotated_second)
+    tl.store(output_row + rotary_offsets + HALF_ROPE_DIM, rotated_second)
 
 
 def triton_qsa_rmsnorm_mrope(
@@ -150,7 +150,6 @@ def triton_qsa_rmsnorm_mrope(
     num_tokens, num_heads, head_dim = tensor.shape
     if not num_tokens:
         return output
-    gather_cache = positions is not None
     _qsa_rmsnorm_mrope_kernel[(num_tokens, num_heads)](
         tensor,
         weight,
@@ -162,19 +161,19 @@ def triton_qsa_rmsnorm_mrope(
         cos_sin.stride(-2),
         output.stride(0),
         output.stride(1),
-        num_heads=num_heads,
-        head_dim=head_dim,
-        eps=eps,
-        mrope_section_h=mrope_section[1] if has_mrope else 0,
-        mrope_section_w=mrope_section[2] if has_mrope else 0,
-        rope_dim=rope_dim,
-        has_mrope=has_mrope,
-        block_dim=triton.next_power_of_2(head_dim),
+        NUM_HEADS=num_heads,
+        HEAD_DIM=head_dim,
+        EPS=eps,
+        MROPE_SECTION_H=mrope_section[1] if has_mrope else 0,
+        MROPE_SECTION_W=mrope_section[2] if has_mrope else 0,
+        ROPE_DIM=rope_dim,
+        HAS_MROPE=has_mrope,
+        BLOCK_DIM=triton.next_power_of_2(head_dim),
         positions_ptr=positions,
-        position_stride_axis=positions.stride(0) if gather_cache and has_mrope else 0,
-        position_stride_token=positions.stride(-1) if gather_cache else 0,
-        cache_rows=cos_sin.shape[0] if gather_cache else 0,
-        GATHER_CACHE=gather_cache,
+        position_stride_axis=positions.stride(0) if positions is not None and positions.ndim == 2 else 0,
+        position_stride_token=positions.stride(-1) if positions is not None else 0,
+        cache_rows=cos_sin.shape[0],
+        GATHER_CACHE=positions is not None,
         num_warps=1,
         num_stages=1,
     )

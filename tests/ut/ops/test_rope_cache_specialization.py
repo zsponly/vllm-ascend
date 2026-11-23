@@ -84,8 +84,9 @@ def test_legacy_launch_isolates_unused_direct_cache_metadata(wrapper):
                 assert launch["kernel"] == "qsa"
                 assert launch["GATHER_CACHE"] is False
                 assert launch["positions_ptr"] is None
-                for parameter in ("position_stride_axis", "position_stride_token", "cache_rows"):
+                for parameter in ("position_stride_axis", "position_stride_token"):
                     assert launch[parameter] == 0
+                assert launch["cache_rows"] == shape[0]
                 continue
             assert launch["kernel"] == "legacy"
             assert (
@@ -146,7 +147,7 @@ def test_dynamic_cache_metadata_uses_runtime_parameters_without_specialization(n
         )
     else:
         assert "GATHER_CACHE" not in arguments
-    assert ast.unparse(arguments["rope_dim"].annotation) == "tl.constexpr"
+    assert ast.unparse(arguments["ROPE_DIM"].annotation) == "tl.constexpr"
 
 
 @pytest.mark.parametrize("layout", ["contiguous", "fixed_capacity"])
@@ -178,7 +179,10 @@ def test_split_legacy_entry_keeps_original_signature_and_shared_body():
     extra.append("cache_rows")
     legacy_args = [arg.arg for arg in legacy.args.args]
     assert not set(extra) & set(legacy_args)
-    assert [arg.arg for arg in direct.args.args] == legacy_args + extra
+    assert [arg.arg for arg in direct.args.args] == [
+        arg.arg.upper() if arg.annotation is not None and ast.unparse(arg.annotation) == "tl.constexpr" else arg.arg
+        for arg in legacy.args.args
+    ] + extra
     # Both launch entries delegate to one body. Legacy metadata stays literal,
     # so it cannot become unused runtime arguments in the device entry point.
     for entry, gather in ((legacy, False), (direct, True)):
