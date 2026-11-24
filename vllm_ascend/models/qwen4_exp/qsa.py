@@ -475,7 +475,17 @@ class AscendQSAIndexer(upstream_indexer.QSAIndexer):
             position_rows = qsa_indexer.canonical_qsa_rope_positions(positions)[:num_tokens].to(
                 device=raw_key_cache.device
             )
-        if self._fused_norm_rope_eligible(token_k, positions):
+        compressed_cache = self.compressed_key_cache.kv_cache
+        if (
+            self._fused_norm_rope_eligible(token_k, positions)
+            and self.compress_ratio == 4
+            and self.k_layernorm.weight.is_contiguous()
+            and compressed_cache.dtype == token_k.dtype
+            and compressed_cache.device == token_k.device
+            and compressed_cache.ndim == 4
+            and compressed_cache.shape[2:] == (1, self.index_head_dim)
+            and all(compressed_cache.shape)
+        ):
             rotary_cache = self.rotary_emb._match_cos_sin_cache_dtype(token_k)  # noqa: SLF001
             qsa_compress_groups_with_ratio_fused(
                 token_k[:num_tokens],
@@ -490,7 +500,7 @@ class AscendQSAIndexer(upstream_indexer.QSAIndexer):
                 rope_position_cache,
                 norm_weight=self.k_layernorm.weight,
                 rotary_cache=rotary_cache,
-                compressed_cache=self.compressed_key_cache.kv_cache,
+                compressed_cache=compressed_cache,
                 norm_eps=self.k_layernorm.variance_epsilon,
             )
         else:

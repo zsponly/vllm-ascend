@@ -85,9 +85,23 @@ def test_main_projection_dispatch_uses_real_eligibility(monkeypatch, case):
         layer.rotary_emb._match_cos_sin_cache_dtype.assert_not_called()
 
 
-@pytest.mark.parametrize("head_dim", [128, 64])
+@pytest.mark.parametrize(
+    "head_dim,case",
+    [
+        (128, "eligible"),
+        (64, "eligible"),
+        (128, "ratio"),
+        (128, "weight_stride"),
+        (128, "cache_dtype"),
+        (128, "cache_rank"),
+        (128, "cache_heads"),
+        (128, "cache_width"),
+        (128, "cache_empty"),
+        (128, "cache_device"),
+    ],
+)
 @pytest.mark.parametrize("with_position_ring", [False, True])
-def test_compression_dispatch_and_ring_order(head_dim, with_position_ring):
+def test_compression_dispatch_and_ring_order(head_dim, case, with_position_ring):
     events = []
     pooled, first_positions, normalized = (object() for _ in range(3))
 
@@ -112,6 +126,22 @@ def test_compression_dispatch_and_ring_order(head_dim, with_position_ring):
     raw_cache = torch.empty(1, 8, 1, head_dim, dtype=torch.bfloat16)
     position_ring = torch.empty(1, 8, 1, 3, dtype=torch.int64) if with_position_ring else None
     compressed_cache = torch.empty(1, 8, 1, head_dim, dtype=torch.bfloat16)
+    if case == "ratio":
+        layer.compress_ratio = 2
+    elif case == "weight_stride":
+        layer.k_layernorm.weight = torch.empty(head_dim * 2, dtype=torch.bfloat16)[::2]
+    elif case == "cache_dtype":
+        compressed_cache = compressed_cache.float()
+    elif case == "cache_rank":
+        compressed_cache = compressed_cache.squeeze(2)
+    elif case == "cache_heads":
+        compressed_cache = torch.empty(1, 8, 2, head_dim, dtype=torch.bfloat16)
+    elif case == "cache_width":
+        compressed_cache = torch.empty(1, 8, 1, 64, dtype=torch.bfloat16)
+    elif case == "cache_empty":
+        compressed_cache = compressed_cache[:0]
+    elif case == "cache_device":
+        compressed_cache = torch.empty(1, 8, 1, head_dim, dtype=torch.bfloat16, device="meta")
     layer.raw_key_cache = SimpleNamespace(key_cache=raw_cache, rope_position_cache=position_ring)
     layer.compressed_key_cache = SimpleNamespace(kv_cache=compressed_cache)
 
@@ -145,13 +175,15 @@ def test_compression_dispatch_and_ring_order(head_dim, with_position_ring):
         slot_mapping=torch.tensor([6, 7]),
     )
     compressed_metadata = SimpleNamespace(slot_mapping=torch.tensor([-1, 0]))
+    # Compression-only constraints must not disable the separate Q/K Norm/RoPE path.
+    assert layer._fused_norm_rope_eligible(token_k, positions) == (head_dim == 128)
     layer._update_and_compress(token_k, positions, raw_metadata, compressed_metadata)
     compression.assert_called_once()
     args, kwargs = compression.call_args
     assert args[0].shape == (2, 1, head_dim)  # Exclude graph-padding rows.
-    assert args[8] == 4
+    assert args[8] == layer.compress_ratio
     assert args[9] is position_ring
-    if head_dim == 128:
+    if head_dim == 128 and case == "eligible":
         assert kwargs["compressed_cache"] is compressed_cache
         assert kwargs["norm_weight"] is layer.k_layernorm.weight
         layer.normalize_compressed_keys.assert_not_called()
