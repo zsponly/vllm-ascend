@@ -129,6 +129,8 @@ def triton_qsa_rmsnorm_mrope(
         raise ValueError("QSA norm+RoPE requires BF16 input and weight")
     if tensor.stride(-1) != 1 or weight.ndim != 1 or weight.shape[0] != tensor.shape[-1]:
         raise ValueError("QSA norm+RoPE requires contiguous head rows and matching weight")
+    if not weight.is_contiguous():
+        raise ValueError("QSA norm+RoPE requires contiguous weight")
     if cos_sin.ndim not in (2, 3) or cos_sin.shape[-1] != rope_dim:
         raise ValueError("QSA norm+RoPE received an invalid rotary cache view")
     if rope_dim <= 0 or rope_dim > tensor.shape[-1] or rope_dim % 2:

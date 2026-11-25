@@ -41,6 +41,7 @@
 
 - `tensor` and `weight` must be BF16. The last dimension of `tensor` and `weight` must match.
 - `tensor` must have three dimensions and contiguous head rows.
+- `weight` must be contiguous; non-contiguous weights raise `ValueError` before the kernel is launched.
 - Without `positions`, `cos_sin` must have two dimensions for RoPE or three dimensions for MRoPE. Gathered MRoPE requires exactly three cache axes.
 - With `positions`, `cos_sin` is always a two-dimensional full table. MRoPE uses three position axes instead of three cache axes. Both MRoPE modes require three section values.
 - Without `positions`, the token count in `cos_sin` must equal `tensor.shape[0]`.

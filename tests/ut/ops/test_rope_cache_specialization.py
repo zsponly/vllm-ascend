@@ -40,11 +40,11 @@ def wrapper(request):
     }
     exec(compile(ast.Module(body=functions, type_ignores=[]), str(path), "exec"), namespace)
 
-    def invoke(rows, cache, positions=None):
+    def invoke(rows, cache, positions=None, weight=None):
         if name == "qsa_rmsnorm_mrope":
             namespace[f"triton_{name}"](
                 tensor=torch.empty(rows, 4, 128, dtype=torch.bfloat16),
-                weight=torch.empty(128, dtype=torch.bfloat16),
+                weight=torch.empty(128, dtype=torch.bfloat16) if weight is None else weight,
                 cos_sin=cache,
                 eps=1e-6,
                 mrope_section=[11, 11, 10],
@@ -69,6 +69,7 @@ def wrapper(request):
             )
         return launches[-1]
 
+    invoke.launches = launches
     return name, invoke
 
 
@@ -151,3 +152,28 @@ def test_direct_position_axis_stride_tracks_layout_at_runtime(wrapper, layout):
         launch = invoke(rows, cache, positions)
         assert launch["position_stride_axis"] == capacity
         assert launch["position_stride_token"] == 1
+
+
+@pytest.mark.parametrize("wrapper", ["qsa_rmsnorm_mrope"], indirect=True)
+@pytest.mark.parametrize("direct", [False, True])
+@pytest.mark.parametrize("rows", [0, 1])
+def test_qsa_rejects_noncontiguous_weight_before_launch(wrapper, direct, rows):
+    _, invoke = wrapper
+    weight = torch.empty(256, dtype=torch.bfloat16)[::2]
+    cache = torch.empty(16 if direct else rows, 64, dtype=torch.bfloat16)
+    positions = torch.arange(rows) if direct else None
+    with pytest.raises(ValueError, match="requires contiguous weight"):
+        invoke(rows, cache, positions, weight=weight)
+    assert not invoke.launches
+
+
+@pytest.mark.parametrize("wrapper", ["qsa_rmsnorm_mrope"], indirect=True)
+@pytest.mark.parametrize("direct", [False, True])
+def test_qsa_accepts_contiguous_weight_with_storage_offset(wrapper, direct):
+    _, invoke = wrapper
+    weight = torch.empty(129, dtype=torch.bfloat16)[1:]
+    assert weight.is_contiguous() and weight.storage_offset() == 1
+    cache = torch.empty(16 if direct else 1, 64, dtype=torch.bfloat16)
+    positions = torch.zeros(1, dtype=torch.int64) if direct else None
+    invoke(1, cache, positions, weight=weight)
+    assert len(invoke.launches) == 1

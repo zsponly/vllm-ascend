@@ -91,7 +91,6 @@ def test_main_projection_dispatch_uses_real_eligibility(monkeypatch, case):
         (128, "eligible"),
         (64, "eligible"),
         (128, "ratio"),
-        (128, "weight_stride"),
         (128, "cache_dtype"),
         (128, "cache_rank"),
         (128, "cache_heads"),
@@ -128,8 +127,6 @@ def test_compression_dispatch_and_ring_order(head_dim, case, with_position_ring)
     compressed_cache = torch.empty(1, 8, 1, head_dim, dtype=torch.bfloat16)
     if case == "ratio":
         layer.compress_ratio = 2
-    elif case == "weight_stride":
-        layer.k_layernorm.weight = torch.empty(head_dim * 2, dtype=torch.bfloat16)[::2]
     elif case == "cache_dtype":
         compressed_cache = compressed_cache.float()
     elif case == "cache_rank":
