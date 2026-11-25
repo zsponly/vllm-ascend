@@ -128,6 +128,7 @@ class AisbenchRunner:
         self.max_out_len = aisbench_config["max_out_len"]
         self.batch_size = aisbench_config["batch_size"]
         self.request_rate = aisbench_config.get("request_rate", 0)
+        self.burstiness = aisbench_config.get("burstiness")
         self.trust_remote_code = aisbench_config.get("trust_remote_code", True)
         self.temperature = aisbench_config.get("temperature")
         self.top_k = aisbench_config.get("top_k")
@@ -288,6 +289,8 @@ class AisbenchRunner:
         if self.task_type == "performance":
             content = re.sub(r"path=.*", f'path="{self.model_path}",', content)
             content = re.sub(r"request_rate.*", f"request_rate={self.request_rate},", content)
+            if self.burstiness is not None:
+                content += f'\nmodels[0].setdefault("traffic_cfg", {{}})["burstiness"] = {float(self.burstiness)!r}\n'
             content = re.sub(r"temperature.*", "temperature=0,", content)
             content = re.sub(r"ignore_eos.*", "ignore_eos=True,", content)
         if self.task_type in ("accuracy", "spec_decode"):

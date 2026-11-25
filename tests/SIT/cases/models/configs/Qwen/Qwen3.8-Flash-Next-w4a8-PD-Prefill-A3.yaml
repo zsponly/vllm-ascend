@@ -3,15 +3,20 @@ test_cases:
   - name: Qwen3.8-Flash-Next-w4a8-PD-Prefill-A3
     model: &model Eco-Tech/Qwen3.8-Flash-Next-w4a8
     service_mode: pd
+    # Allow the decode engine to compile the main model and MTP graphs on a cold runner.
+    pd_startup_timeout: 10800
+    special_dependencies:
+      fastokens: "0.3.5"
     envs:
       VLLM_USE_MODELSCOPE: "true"
       VLLM_USE_V2_MODEL_RUNNER: "1"
       VLLM_SERVER_DEV_MODE: "1"
-      VLLM_ENGINE_READY_TIMEOUT_S: "4800"
+      VLLM_ENGINE_READY_TIMEOUT_S: "10800"
       VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "3000"
     pd_server_envs:
       - HCCL_NPU_SOCKET_PORT_RANGE: "61400-61499"
         HCCL_BUFFSIZE: "8192"
+        VLLM_USE_FASTOKENS: "1"
       - HCCL_NPU_SOCKET_PORT_RANGE: "61500-61599"
         HCCL_BUFFSIZE: "512"
     pd_server_cmds:
@@ -33,7 +38,7 @@ test_cases:
         - --data-parallel-size
         - "1"
         - --max-model-len
-        - "262144"
+        - "143360"
         - --max-num-seqs
         - "32"
         - --max-num-batched-tokens
@@ -82,22 +87,24 @@ test_cases:
         - --data-parallel-size
         - "4"
         - --max-model-len
-        - "262144"
+        - "143360"
         - --max-num-seqs
         - "32"
         - --max-num-batched-tokens
         - "8192"
         - --gpu-memory-utilization
         - "0.90"
-        - --no-enable-prefix-caching
+        - --enable-prefix-caching
         - --async-scheduling
         - --enable-expert-parallel
+        - --mamba-cache-mode
+        - align
         - --mamba-ssm-cache-dtype
         - bfloat16
         - --engram-config
         - '{"cpu_offload":true,"dp_shared_memory":true}'
         - --compilation-config
-        - '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+        - '{"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[1,2,4,8,12,16,32,40,44,48,64,96,128]}'
         - --additional-config
         - >-
           {"enable_flashcomm1": true,
@@ -105,7 +112,7 @@ test_cases:
            "enable_shared_expert_dp": true,
            "multistream_overlap_shared_expert": true,
            "scheduler_config": {"recompute_scheduler_enable":true},
-           "ascend_compilation_config": {"fuse_norm_quant":false,"enable_npugraph_ex":true,"enable_static_kernel":true,"enable_super_kernel":false}}
+           "ascend_compilation_config": {"fuse_norm_quant":false,"enable_npugraph_ex":true,"enable_static_kernel":true,"enable_super_kernel":true}}
         - --speculative-config
         - '{"method":"qwen3_5_mtp","num_speculative_tokens":3,"enforce_eager":false}'
         - --kv-transfer-config
@@ -116,21 +123,41 @@ test_cases:
            "kv_connector_extra_config": {"prefill":{"dp_size":1,"tp_size":2,"pp_size":4},"decode":{"dp_size":4,"tp_size":2}}}
     test_content: []
     benchmarks:
-      pure_p_16k:
+      prepare_prefill_prompts:
+        case_type: curl_cmd
+        cmds:
+          - python -m tests.e2e.nightly.scripts.prepare_qwen38_pd_prompts prefill
+      warmup_p_128k: &warmup_p_128k
         case_type: performance
-        dataset_path: vllm-ascend/GSM8K_prefix0_in16384_bs200_qwen
+        dataset_path_local: qwen38_a3_prefill/128k
         request_conf: vllm_api_stream_chat
         dataset_conf: gsm8k/gsm8k_gen_0_shot_cot_str_perf
-        num_prompts: 128
-        batch_size: 32
+        num_prompts: 1
+        batch_size: 1
         max_out_len: 1
         request_rate: 0
-      pure_p_128k:
+      pure_p_128k: &pure_p_128k
+        <<: *warmup_p_128k
+        num_prompts: 352
+        batch_size: 88
+        request_rate: 0.228720
+        burstiness: 0
+      pure_p_128k_round_2: *pure_p_128k
+      pure_p_128k_round_3: *pure_p_128k
+      warmup_p_16k: &warmup_p_16k
         case_type: performance
-        dataset_path: vllm-ascend/GSM8K-in131072-bs100-qwen3
+        dataset_path_local: qwen38_a3_prefill/16k
         request_conf: vllm_api_stream_chat
         dataset_conf: gsm8k/gsm8k_gen_0_shot_cot_str_perf
-        num_prompts: 8
-        batch_size: 2
+        num_prompts: 1
+        batch_size: 1
         max_out_len: 1
         request_rate: 0
+      pure_p_16k: &pure_p_16k
+        <<: *warmup_p_16k
+        num_prompts: 300
+        batch_size: 75
+        request_rate: 2.030386
+        burstiness: 0
+      pure_p_16k_round_2: *pure_p_16k
+      pure_p_16k_round_3: *pure_p_16k

@@ -557,7 +557,7 @@ def _build_task_entry(case_key: str, case_config: dict[str, Any], result: Any) -
             {f"acceptance_rate_pos_{position}": round(float(rate), 4) for position, rate in enumerate(result)}
         )
 
-    test_input_keys = ("num_prompts", "max_out_len", "batch_size", "request_rate")
+    test_input_keys = ("num_prompts", "max_out_len", "batch_size", "request_rate", "burstiness")
     test_input = {k: case_config[k] for k in test_input_keys if k in case_config}
 
     target: dict[str, Any] = {}
@@ -686,6 +686,7 @@ async def _run_single_node(config: SingleNodeConfig) -> None:
                 vllm_serve_args=config.pd_server_cmds,
                 env_dict={**config.envs, **kv_pool_manager.server_envs},
                 env_dicts=config.pd_server_envs or None,
+                max_wait_seconds=config.extra_config.get("pd_startup_timeout"),
             ),
             DisaggPDProxy(
                 port=config.proxy_port,

@@ -143,6 +143,7 @@ pytest -sv tests/e2e/common/single_node/test_single_node.py
 | `test_content` | list | No | `completion` | Registered functional test phases |
 | `benchmarks` | mapping | No | `{}` | AISBench accuracy or performance jobs |
 | `epd_server_cmds` | list of lists | Conditional | `[]` | Encode and decode commands for EPD |
+| `pd_startup_timeout` | number | No | 2800 | Seconds to wait for all PD services to become healthy |
 | `epd_proxy_args` | list | Conditional | `[]` | EPD proxy arguments |
 | `kv_pool` | mapping | No | - | Managed Mooncake or Memcache service |
 
@@ -735,6 +736,7 @@ Each key under `benchmarks` names one AISBench job. Common fields include:
 | `max_out_len` | Maximum generated tokens |
 | `batch_size` | Client concurrency or batch size |
 | `request_rate` | Request arrival rate; use `0` for no rate limit where supported |
+| `burstiness` | Optional AISBench traffic setting for performance cases. Set to `0` for evenly spaced requests at a positive request rate. |
 | `baseline` | Expected reference result |
 | `threshold` | Allowed accuracy or performance threshold |
 
