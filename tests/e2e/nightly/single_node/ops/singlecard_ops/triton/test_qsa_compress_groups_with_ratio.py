@@ -78,7 +78,8 @@ def test_compressed_cache_replay_and_masked_slots():
         args[6].add_(4)
         args[1].add_(offset)
         args[7][0] = -1
-        args[7][4] = cache.shape[0] * cache.shape[1]  # Out-of-range store is masked.
+        # Exercise both the first invalid slot and slots beyond the last page.
+        args[7][4] = cache.shape[0] * cache.shape[1] + offset
         args[7][8] = offset // 4
         cache.fill_(17)
         expected = cache.clone()

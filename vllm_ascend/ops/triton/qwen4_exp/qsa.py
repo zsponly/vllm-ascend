@@ -286,7 +286,8 @@ def _compress_qsa_groups_kernel(
         values = tl.where(dims < ROTARY_DIM, rotated, normalized)
         # Match the old store mask, including zero results for invalid owners.
         valid_slot = (compressed_slot >= 0) & (compressed_slot < COMPRESSED_NUM_SLOTS)
-        slot = tl.maximum(compressed_slot, 0).to(tl.int64)
+        # Keep masked addresses in bounds, as in _store_qsa_rows_kernel.
+        slot = tl.minimum(tl.maximum(compressed_slot, 0), COMPRESSED_NUM_SLOTS - 1).to(tl.int64)
         destination = (
             compressed_cache_ptr
             + slot // COMPRESSED_PAGE_SIZE * COMPRESSED_STRIDE_BLOCK
