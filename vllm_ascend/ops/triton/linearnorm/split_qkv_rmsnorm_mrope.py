@@ -42,8 +42,19 @@ def _validate_rope_positions(
         raise ValueError("QKV RoPE positions, rotary cache and input must share a device")
 
 
-@triton.jit
-def _split_qkv_rmsnorm_mrope(
+@triton.jit(
+    do_not_specialize=[
+        "num_tokens",
+        "front_core_num",
+        "num_tokens_each_front_core",
+        "num_tokens_each_tail_core",
+        "position_stride_axis",
+        "position_stride_token",
+        "cache_stride",
+        "cache_rows",
+    ]
+)
+def split_qkv_rmsnorm_mrope_kernel(
     in_qkv_ptr: torch.Tensor,
     q_weight_ptr: torch.Tensor,
     q_bias_ptr: torch.Tensor,
@@ -315,168 +326,6 @@ def _split_qkv_rmsnorm_mrope(
             tl.store(out_gate_offset + tl.arange(0, GATE_SIZE), in_gate_tensor)
 
 
-@triton.jit(
-    do_not_specialize=["num_tokens", "front_core_num", "num_tokens_each_front_core", "num_tokens_each_tail_core"]
-)
-def split_qkv_rmsnorm_mrope_kernel(
-    in_qkv_ptr: torch.Tensor,
-    q_weight_ptr: torch.Tensor,
-    q_bias_ptr: torch.Tensor,
-    k_weight_ptr: torch.Tensor,
-    k_bias_ptr: torch.Tensor,
-    cos_sin_ptr: torch.Tensor,
-    out_q_ptr: torch.Tensor,
-    out_k_ptr: torch.Tensor,
-    out_v_ptr: torch.Tensor,
-    out_gate_ptr: torch.Tensor,
-    num_tokens,
-    front_core_num,
-    num_tokens_each_front_core,
-    num_tokens_each_tail_core,
-    num_q_heads: tl.constexpr,
-    num_kv_heads: tl.constexpr,
-    head_size: tl.constexpr,
-    q_size: tl.constexpr,
-    kv_size: tl.constexpr,
-    eps: tl.constexpr,
-    mrope_section_t,
-    mrope_section_h,
-    mrope_section_w,
-    has_bias: tl.constexpr,
-    is_interleaved: tl.constexpr,
-    rope_dim: tl.constexpr,
-    half_rope_dim: tl.constexpr,
-    IS_PARTIAL_ROPE: tl.constexpr,
-    gate_size: tl.constexpr,
-):
-    # Keep the legacy launch signature free of direct-cache metadata.
-    _split_qkv_rmsnorm_mrope(
-        in_qkv_ptr,
-        q_weight_ptr,
-        q_bias_ptr,
-        k_weight_ptr,
-        k_bias_ptr,
-        cos_sin_ptr,
-        out_q_ptr,
-        out_k_ptr,
-        out_v_ptr,
-        out_gate_ptr,
-        num_tokens,
-        front_core_num,
-        num_tokens_each_front_core,
-        num_tokens_each_tail_core,
-        num_q_heads,
-        num_kv_heads,
-        head_size,
-        q_size,
-        kv_size,
-        eps,
-        mrope_section_t,
-        mrope_section_h,
-        mrope_section_w,
-        has_bias,
-        is_interleaved,
-        rope_dim,
-        half_rope_dim,
-        IS_PARTIAL_ROPE,
-        gate_size,
-        None,
-        0,
-        0,
-        0,
-        0,
-        False,
-    )
-
-
-@triton.jit(
-    do_not_specialize=[
-        "num_tokens",
-        "front_core_num",
-        "num_tokens_each_front_core",
-        "num_tokens_each_tail_core",
-        "position_stride_axis",
-        "position_stride_token",
-        "cache_stride",
-        "cache_rows",
-    ]
-)
-def _split_qkv_rmsnorm_mrope_with_positions_kernel(
-    in_qkv_ptr: torch.Tensor,
-    q_weight_ptr: torch.Tensor,
-    q_bias_ptr: torch.Tensor,
-    k_weight_ptr: torch.Tensor,
-    k_bias_ptr: torch.Tensor,
-    cos_sin_ptr: torch.Tensor,
-    out_q_ptr: torch.Tensor,
-    out_k_ptr: torch.Tensor,
-    out_v_ptr: torch.Tensor,
-    out_gate_ptr: torch.Tensor,
-    num_tokens,
-    front_core_num,
-    num_tokens_each_front_core,
-    num_tokens_each_tail_core,
-    NUM_Q_HEADS: tl.constexpr,
-    NUM_KV_HEADS: tl.constexpr,
-    HEAD_SIZE: tl.constexpr,
-    Q_SIZE: tl.constexpr,
-    KV_SIZE: tl.constexpr,
-    EPS: tl.constexpr,
-    mrope_section_t,
-    mrope_section_h,
-    mrope_section_w,
-    HAS_BIAS: tl.constexpr,
-    IS_INTERLEAVED: tl.constexpr,
-    ROPE_DIM: tl.constexpr,
-    HALF_ROPE_DIM: tl.constexpr,
-    IS_PARTIAL_ROPE: tl.constexpr,
-    GATE_SIZE: tl.constexpr,
-    positions_ptr,
-    position_stride_axis,
-    position_stride_token,
-    cache_stride,
-    cache_rows,
-):
-    # Gather full-cache rows using runtime position metadata.
-    _split_qkv_rmsnorm_mrope(
-        in_qkv_ptr,
-        q_weight_ptr,
-        q_bias_ptr,
-        k_weight_ptr,
-        k_bias_ptr,
-        cos_sin_ptr,
-        out_q_ptr,
-        out_k_ptr,
-        out_v_ptr,
-        out_gate_ptr,
-        num_tokens,
-        front_core_num,
-        num_tokens_each_front_core,
-        num_tokens_each_tail_core,
-        NUM_Q_HEADS,
-        NUM_KV_HEADS,
-        HEAD_SIZE,
-        Q_SIZE,
-        KV_SIZE,
-        EPS,
-        mrope_section_t,
-        mrope_section_h,
-        mrope_section_w,
-        HAS_BIAS,
-        IS_INTERLEAVED,
-        ROPE_DIM,
-        HALF_ROPE_DIM,
-        IS_PARTIAL_ROPE,
-        GATE_SIZE,
-        positions_ptr,
-        position_stride_axis,
-        position_stride_token,
-        cache_stride,
-        cache_rows,
-        True,
-    )
-
-
 def triton_split_qkv_rmsnorm_mrope(
     qkv: torch.Tensor,
     q_weight: torch.Tensor,
@@ -552,19 +401,8 @@ def triton_split_qkv_rmsnorm_mrope(
 
     has_bias = q_bias is not None
 
-    # Separate entry points keep unused runtime arguments out of legacy binaries.
-    kernel = split_qkv_rmsnorm_mrope_kernel
-    position_kwargs = {}
-    if positions is not None:
-        kernel = _split_qkv_rmsnorm_mrope_with_positions_kernel
-        position_kwargs = {
-            "positions_ptr": positions,
-            "position_stride_axis": positions.stride(0) if positions.ndim == 2 else 0,
-            "position_stride_token": positions.stride(-1),
-            "cache_stride": cos_sin.stride(0),
-            "cache_rows": cos_sin.shape[0],
-        }
-    kernel[(block_dim,)](
+    gather_cache = positions is not None
+    split_qkv_rmsnorm_mrope_kernel[(block_dim,)](
         qkv,
         q_weight,
         q_bias,
@@ -594,7 +432,12 @@ def triton_split_qkv_rmsnorm_mrope(
         rope_dim // 2,
         IS_PARTIAL_ROPE,
         gate_size,
-        **position_kwargs,
+        positions_ptr=positions,
+        position_stride_axis=(positions.stride(0) if positions.ndim == 2 else 0) if gather_cache else None,
+        position_stride_token=positions.stride(-1) if gather_cache else None,
+        cache_stride=cos_sin.stride(0) if gather_cache else None,
+        cache_rows=cos_sin.shape[0] if gather_cache else None,
+        GATHER_CACHE=gather_cache,
     )
 
     return q_output, k_output, v_output, gate_output
