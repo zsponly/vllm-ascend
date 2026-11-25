@@ -3085,3 +3085,44 @@ def test_requires_runner_dp_token_padding(
     )
 
     assert runner._requires_runner_dp_token_padding() is expected
+
+
+@pytest.mark.parametrize("has_sync_state", [False, True])
+def test_qwen_mtp_dp_padding_preserves_dispatch_contract(monkeypatch, has_sync_state):
+    from dataclasses import dataclass
+
+    @dataclass
+    class SyncState:
+        num_tokens_across_dp: torch.Tensor
+
+    runner = NPUModelRunner.__new__(NPUModelRunner)
+    runner.vllm_config = SimpleNamespace(
+        parallel_config=SimpleNamespace(pipeline_parallel_size=1, data_parallel_size=2, tensor_parallel_size=2)
+    )
+    runner.model_config = SimpleNamespace(architecture="Qwen4ExpForCausalLM")
+    runner.speculative_config = SimpleNamespace(method="qwen3_5_mtp")
+    original_state = SyncState(torch.tensor([55, 0, 4])) if has_sync_state else None
+    descriptor = object()
+    calls = []
+
+    def dispatch(*args, **kwargs):
+        calls.append((args, kwargs))
+        return descriptor, original_state
+    module = __import__("vllm_ascend.worker.v2.model_runner", fromlist=["vllm_model_runner"])
+    monkeypatch.setattr(module.vllm_model_runner, "dispatch_cg_and_sync_dp", dispatch)
+
+    runner._install_sp_dp_token_padding()
+    installed = module.vllm_model_runner.dispatch_cg_and_sync_dp
+    runner._install_sp_dp_token_padding()
+    assert module.vllm_model_runner.dispatch_cg_and_sync_dp is installed
+    token = object()
+    actual_descriptor, padded_state = installed(token, marker=True)
+
+    assert calls == [((token,), {"marker": True})]
+    assert actual_descriptor is descriptor
+    if has_sync_state:
+        torch.testing.assert_close(padded_state.num_tokens_across_dp, torch.tensor([56, 0, 4]))
+        torch.testing.assert_close(original_state.num_tokens_across_dp, torch.tensor([55, 0, 4]))
+        assert padded_state is not original_state
+    else:
+        assert padded_state is None

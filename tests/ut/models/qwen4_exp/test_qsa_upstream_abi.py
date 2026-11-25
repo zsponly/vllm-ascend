@@ -174,7 +174,8 @@ def test_text_only_indexer_uses_fused_rope_without_mrope_sections(monkeypatch) -
     assert fused.call_count == 2
     for call in fused.call_args_list:
         assert call.kwargs["mrope_section"] == []
-        torch.testing.assert_close(call.kwargs["cos_sin"], cache[positions])
+        torch.testing.assert_close(call.kwargs["cos_sin"], cache)
+        torch.testing.assert_close(call.kwargs["positions"], positions)
 
 
 @pytest.mark.parametrize("pcp", [False, True])
@@ -453,6 +454,14 @@ def test_pcp_qsa_full_graph_keeps_capture_and_replay_extents(monkeypatch, local_
         ),
         SimpleNamespace(layer_names=["indexer"], get_metadata_builder=lambda _: indexer_builder),
     ]
+    # Fixture pages use identical manager/kernel units.
+    for group in groups:
+        group._with_kernel_block_table = lambda common: common
+
+        def build_group_metadata(*, common_prefix_len, common_attn_metadata, _group=group, **kwargs):
+            return _group.get_metadata_builder(0).build(common_prefix_len, common_attn_metadata, **kwargs)
+
+        group.build_metadata = build_group_metadata
     cache_config = SimpleNamespace(kv_cache_groups=[SimpleNamespace(kv_cache_spec=None)])
 
     for capture in (True, False):
@@ -482,6 +491,7 @@ def test_pcp_qsa_full_graph_keeps_capture_and_replay_extents(monkeypatch, local_
             global_block_tables=(global_table,),
             global_slot_mappings=global_slots,
         )
+        context.for_attention_group = lambda _group: context
         metadata = build_attn_metadata(
             attn_groups=[groups],
             query_start_loc_gpu=local_starts,
