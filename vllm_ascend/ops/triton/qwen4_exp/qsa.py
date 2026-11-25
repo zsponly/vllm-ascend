@@ -315,11 +315,14 @@ def pack_qsa_group_indices_npu(
     """Pack LI-v2 groups and the open-group tail into one fixed buffer.
 
     This index-only operation is independent of attention head/rotary width.
+    Sequence lengths must be contiguous.
     The compact output width is token_topk // compress_ratio + compress_ratio - 1;
     the caller supplies group IDs selected by the indexer, not Q/K vectors.
     """
     if block_indices.device.type != "npu" or not HAS_TRITON:
         raise RuntimeError("QSA NPU compact packing requires Triton")
+    if not sequence_lengths.is_contiguous():
+        raise ValueError("QSA group packing requires contiguous sequence lengths")
     if token_topk % compress_ratio:
         raise ValueError("QSA token top-k must be divisible by compression ratio")
     block_topk = token_topk // compress_ratio
